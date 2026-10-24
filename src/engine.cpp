@@ -47,15 +47,7 @@ std::vector<Found> decode_stream(const std::vector<cf>& y, int max_errors,
 
 }  // namespace
 
-std::vector<int> default_channels() {
-    return {101, 102, 107, 108, 113, 114, 125, 126, 127, 128,
-            131, 132, 134, 141, 142, 147, 148, 153, 154, 165,
-            166, 167, 168, 171, 172, 174, 176};
-}
-
-MonitorEngine::MonitorEngine(EngineConfig cfg) : cfg_(std::move(cfg)) {
-    if (cfg_.channels.empty()) cfg_.channels = default_channels();
-}
+MonitorEngine::MonitorEngine(EngineConfig cfg) : cfg_(std::move(cfg)) {}
 
 MonitorEngine::~MonitorEngine() { stop(); }
 

@@ -15,7 +15,7 @@ namespace openitc {
 
 struct EngineConfig {
     RtlConfig rtl{};
-    std::vector<int> channels;  // empty => default_channels()
+    std::vector<int> channels;  // required: loaded from channel configuration file
     int chunk_ms = 250;
     int max_errors = 8;
     std::string iq_file;  // empty => live RTL-SDR; otherwise raw interleaved U8 IQ
@@ -37,9 +37,6 @@ struct EngineStats {
     unsigned long long sync_hits = 0;
     std::vector<ChannelStats> channels;
 };
-
-// The 27 on-air PTC channels.
-std::vector<int> default_channels();
 
 // Owns the SDR + channelizer + per-channel/per-rate decode loop and runs it on
 // a worker thread, emitting a PacketEvent for every decoded packet. Consumers

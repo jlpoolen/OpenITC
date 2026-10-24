@@ -12,6 +12,10 @@
 #include <ctime>
 #include <fstream>
 #include <map>
+#include <set>
+#include <sstream>
+#include <stdexcept>
+#include <cctype>
 #include <string>
 #include <thread>
 #include <vector>
@@ -45,6 +49,45 @@ void demod_usage() {
         "  -h            show this help and exit\n");
 }
 
+// Channel configuration is data, not part of the demodulator binary.
+// A path is interpreted relative to the current working directory.
+std::vector<int> load_channels(const std::string& path, uint32_t center, uint32_t rate) {
+    std::ifstream in(path);
+    if (!in) throw std::runtime_error("cannot open channel configuration: " + path);
+    std::vector<int> channels;
+    std::set<int> seen;
+    std::string line;
+    size_t lineno = 0;
+    while (std::getline(in, line)) {
+        ++lineno;
+        const auto comment = line.find('#');
+        if (comment != std::string::npos) line.erase(comment);
+        const auto first = line.find_first_not_of(" \t\r\n");
+        if (first == std::string::npos) continue;
+        const auto last = line.find_last_not_of(" \t\r\n");
+        const std::string value = line.substr(first, last - first + 1);
+        auto bad = [&](const std::string& why) -> void {
+            throw std::runtime_error(path + ":" + std::to_string(lineno) + ": " + why);
+        };
+        if (value.find_first_not_of("0123456789") != std::string::npos)
+            bad("expected one integer channel number per line, got '" + value + "'");
+        int ch = -1;
+        try { ch = std::stoi(value); }
+        catch (const std::exception&) { bad("invalid channel number '" + value + "'"); }
+        if (ch < 0 || ch > 255) bad("channel must be between 0 and 255");
+        if (!seen.insert(ch).second) bad("duplicate channel " + std::to_string(ch));
+        const double offset = static_cast<double>(itc_frequency(static_cast<uint32_t>(ch)))
+                            - static_cast<double>(center);
+        // Filtered channels must fit inside the recorded SDR passband.
+        if (std::abs(offset) + 12500.0 >= rate / 2.0)
+            bad("channel " + std::to_string(ch) + " is outside the capture bandwidth");
+        channels.push_back(ch);
+    }
+    if (!in.eof()) throw std::runtime_error("error reading channel configuration: " + path);
+    if (channels.empty()) throw std::runtime_error("channel configuration is empty: " + path);
+    return channels;
+}
+
 void monitor_usage() {
     std::printf(
         "Usage: openitc monitor [options]\n"
@@ -52,6 +95,7 @@ void monitor_usage() {
         "  as they arrive, until interrupted (Ctrl-C).\n"
         "  -f <file>     offline raw interleaved uint8 I/Q file (no SDR access)\n"
         "  -T <epoch>    capture start Unix seconds (default: relative offsets)\n"
+        "  -c <file>     channel configuration file (default config/channels.default.conf)\n"
         "  -d <index>    RTL device index               (default 0)\n"
         "  -s <rate>     capture rate in Hz, multiple of 192000 (default 2304000)\n"
         "  -g <db>       tuner gain, 0 for AGC          (default 42.0)\n"
@@ -238,6 +282,7 @@ int run_monitor(int argc, char** argv) {
     ec.chunk_ms = 250;
     ec.max_errors = 8;
     double cooldown = 8.0;
+    std::string channels_file = "config/channels.default.conf";
     int verbosity = 0;
     int interval_sec = 60;
     for (int i = 0; i < argc; ++i) {
@@ -247,6 +292,7 @@ int run_monitor(int argc, char** argv) {
             return argv[++i];
         };
         if (a == "-h" || a == "--help") { monitor_usage(); return 0; }
+        else if (a == "-c") channels_file = next();
         else if (a == "-f") ec.iq_file = next();
         else if (a == "-T") ec.capture_start_unix = std::atof(next());
         else if (a == "-d") ec.rtl.device_index = std::atoi(next());
@@ -265,7 +311,12 @@ int run_monitor(int argc, char** argv) {
     if (ec.capture_start_unix < 0) fail("-T must be a nonnegative Unix timestamp");
     if (verbosity < 0 || verbosity > 2) fail("-V must be 0, 1, or 2");
     if (interval_sec < 1) fail("-I must be at least 1 second");
-    if (ec.channels.empty()) ec.channels = default_channels();
+    try {
+        ec.channels = load_channels(channels_file, ec.rtl.center_freq, ec.rtl.sample_rate);
+    } catch (const std::exception& ex) {
+        std::fprintf(stderr, "error: %s\n", ex.what());
+        return 1;
+    }
 
     MonitorEngine eng(ec);
     Repository repo;
@@ -290,7 +341,13 @@ int run_monitor(int argc, char** argv) {
     else
         std::printf("OpenITC monitor - offline IQ file %s (U8 interleaved)\n",
                     ec.iq_file.c_str());
-    const double span = (itc_frequency(176) - itc_frequency(101)) / 1e6;
+    const auto [ch_min, ch_max] = std::minmax_element(ec.channels.begin(), ec.channels.end());
+    const double span = (itc_frequency(*ch_max) - itc_frequency(*ch_min)) / 1e6;
+    std::printf("  channel config: %s\n", channels_file.c_str());
+    std::printf("  selected channels:");
+    for (int ch : ec.channels)
+        std::printf(" %d(%.4fMHz)", ch, itc_frequency(ch) / 1e6);
+    std::printf("\n");
     std::printf("  %zu channels, center %.3f MHz, span %.3f MHz, rate %u Hz, gain %s,"
                 " bias_tee %s\n",
                 ec.channels.size(), ec.rtl.center_freq / 1e6, span, ec.rtl.sample_rate,
