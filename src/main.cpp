@@ -8,7 +8,6 @@
 
 #include "dsp.h"
 #include "rtl_source.h"
-#include "decode.h"
 #include "native.h"
 
 namespace {
@@ -20,7 +19,6 @@ void usage() {
         "Usage: openitc [capture options]     capture / channelize I/Q\n"
         "       openitc monitor [options]     scan all PTC channels, list packets live\n"
         "       openitc demod   [options]     decode one channel (native PHY)\n"
-        "       openitc decode  [options]     decode one channel via reference s2p\n"
         "\n"
         "Capture options:\n"
         "  -d <index>   RTL device index              (default 0)\n"
@@ -39,16 +37,13 @@ void usage() {
         "  -l           list devices and exit\n"
         "  -h           show this help and exit\n"
         "\n"
-        "Run 'openitc monitor -h', 'openitc demod -h' or 'openitc decode -h'\n"
+        "Run 'openitc monitor -h' or 'openitc demod -h'\n"
         "for subcommand options.\n");
 }
 
 }  // namespace
 
 int main(int argc, char** argv) {
-    if (argc > 1 && std::string(argv[1]) == "decode") {
-        return openitc::run_decode(argc, argv);
-    }
     if (argc > 1 && std::string(argv[1]) == "demod") {
         return openitc::run_demod(argc, argv);
     }

@@ -20,3 +20,7 @@ captures/
 
 # Documents that may be third-party / copyrighted
 *.pdf
+
+# Local Linux build and runtime logs
+/build-linux/
+/logs/
