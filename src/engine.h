@@ -22,10 +22,18 @@ struct EngineConfig {
     bool decode_hr = true;
 };
 
+struct ChannelStats {
+    int channel = 0;
+    int mode = 0;  // 0=FR, 1=HR
+    unsigned long long sync_hits = 0;
+    unsigned long long packets = 0;
+};
+
 struct EngineStats {
     unsigned long long chunks = 0;
     unsigned long long packets = 0;
     unsigned long long sync_hits = 0;
+    std::vector<ChannelStats> channels;
 };
 
 // The 27 on-air PTC channels.

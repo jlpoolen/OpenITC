@@ -58,6 +58,8 @@ void monitor_usage() {
         "  -t <ms>       capture chunk size in ms       (default 250)\n"
         "  -C <s>        per-packet repeat cooldown (s) (default 8)\n"
         "  -E <n>        max sync bit errors            (default 8)\n"
+        "  -V <0|1|2>    diagnostics: off/summary/per-channel (default 0)\n"
+        "  -I <sec>      diagnostic interval in seconds (default 60)\n"
         "  -h            show this help and exit\n");
 }
 
@@ -230,6 +232,8 @@ int run_monitor(int argc, char** argv) {
     ec.chunk_ms = 250;
     ec.max_errors = 8;
     double cooldown = 8.0;
+    int verbosity = 0;
+    int interval_sec = 60;
     for (int i = 0; i < argc; ++i) {
         std::string a = argv[i];
         auto next = [&]() -> const char* {
@@ -247,7 +251,11 @@ int run_monitor(int argc, char** argv) {
         else if (a == "-t") ec.chunk_ms = std::atoi(next());
         else if (a == "-E") ec.max_errors = std::atoi(next());
         else if (a == "-C") cooldown = std::atof(next());
+        else if (a == "-V") verbosity = std::atoi(next());
+        else if (a == "-I") interval_sec = std::atoi(next());
     }
+    if (verbosity < 0 || verbosity > 2) fail("-V must be 0, 1, or 2");
+    if (interval_sec < 1) fail("-I must be at least 1 second");
     if (ec.channels.empty()) ec.channels = default_channels();
 
     MonitorEngine eng(ec);
@@ -282,8 +290,61 @@ int run_monitor(int argc, char** argv) {
         std::fprintf(stderr, "error: %s\n", eng.last_error().c_str());
         return 1;
     }
-    while (eng.running())
+    auto prev = EngineStats{};
+    auto last_report = std::chrono::steady_clock::now();
+    auto report = [&](double elapsed) {
+        const auto current = eng.stats();
+        std::time_t wall = std::time(nullptr);
+        std::tm local{};
+#ifdef _WIN32
+        localtime_s(&local, &wall);
+#else
+        localtime_r(&wall, &local);
+#endif
+        char ts[40];
+        std::strftime(ts, sizeof(ts), "%Y-%m-%dT%H:%M:%S%z", &local);
+        const auto chunks = current.chunks - prev.chunks;
+        const auto hits = current.sync_hits - prev.sync_hits;
+        const auto packets = current.packets - prev.packets;
+        std::printf("[DIAG] %s interval_s=%.1f chunks=%llu sync_candidates=%llu "
+                    "valid_unique_packets=%llu cumulative_packets=%llu\n",
+                    ts, elapsed, chunks, hits, packets, current.packets);
+        // A sync candidate that did not result in a unique decoded packet
+        // may be invalid, truncated, or a duplicate sampling-phase match.
+        if (verbosity >= 2) {
+            for (const auto& st : current.channels) {
+                unsigned long long old_hits = 0, old_packets = 0;
+                for (const auto& old : prev.channels) {
+                    if (old.channel == st.channel && old.mode == st.mode) {
+                        old_hits = old.sync_hits;
+                        old_packets = old.packets;
+                        break;
+                    }
+                }
+                const auto dh = st.sync_hits - old_hits;
+                const auto dp = st.packets - old_packets;
+                if (dh || dp)
+                    std::printf("[DIAG-CH] ch%03d %s sync_candidates=%llu "
+                                "valid_unique_packets=%llu\n",
+                                st.channel, st.mode == 0 ? "FR" : "HR", dh, dp);
+            }
+        }
+        prev = current;
+    };
+    while (eng.running()) {
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        if (!verbosity) continue;
+        const auto now = std::chrono::steady_clock::now();
+        const double elapsed = std::chrono::duration<double>(now - last_report).count();
+        if (elapsed >= interval_sec) {
+            report(elapsed);
+            last_report = now;
+        }
+    }
+    if (verbosity) {
+        const auto now = std::chrono::steady_clock::now();
+        report(std::chrono::duration<double>(now - last_report).count());
+    }
     if (!eng.last_error().empty())
         std::fprintf(stderr, "error: %s\n", eng.last_error().c_str());
     return 0;

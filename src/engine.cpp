@@ -112,6 +112,11 @@ void MonitorEngine::run() {
 
     const size_t chunk = (size_t)fs * (size_t)cfg_.chunk_ms / 1000;
     unsigned long long seq = 0;
+    std::vector<ChannelStats> totals;
+    for (int ch : cfg_.channels) {
+        if (cfg_.decode_fr) totals.push_back({ch, 0, 0, 0});
+        if (cfg_.decode_hr) totals.push_back({ch, 1, 0, 0});
+    }
 
     while (running_.load()) {
         std::vector<uint8_t> iq;
@@ -137,7 +142,15 @@ void MonitorEngine::run() {
             for (int m = 0; m < 2; ++m) {
                 if (m == 0 && !cfg_.decode_fr) continue;
                 if (m == 1 && !cfg_.decode_hr) continue;
+                const auto before = local_hits;
                 auto found = decode_stream(*streams[m], cfg_.max_errors, local_hits);
+                for (auto& st : totals) {
+                    if (st.channel == ch && st.mode == m) {
+                        st.sync_hits += local_hits - before;
+                        st.packets += found.size();
+                        break;
+                    }
+                }
                 for (auto& f : found) {
                     PacketEvent e;
                     e.seq = ++seq;
@@ -158,6 +171,7 @@ void MonitorEngine::run() {
             stats_.chunks++;
             stats_.sync_hits += local_hits;
             stats_.packets += events.size();
+            stats_.channels = totals;
         }
         for (const auto& e : events) emit(e);
     }
