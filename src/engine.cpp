@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <ctime>
+#include <fstream>
+#include <stdexcept>
 
 #include "dsp.h"
 #include "itc.h"
@@ -78,9 +80,17 @@ void MonitorEngine::emit(const PacketEvent& e) {
 bool MonitorEngine::start() {
     if (running_.load()) return false;
     try {
-        src_ = std::make_unique<RtlSource>(cfg_.rtl);
-        src_->open_device();
-        src_->configure();
+        if (!cfg_.iq_file.empty()) {
+            std::ifstream test(cfg_.iq_file, std::ios::binary | std::ios::ate);
+            if (!test) throw std::runtime_error("cannot open IQ file: " + cfg_.iq_file);
+            const auto bytes = test.tellg();
+            if (bytes < 0 || bytes % 2 != 0)
+                throw std::runtime_error("IQ file has an odd byte count");
+        } else {
+            src_ = std::make_unique<RtlSource>(cfg_.rtl);
+            src_->open_device();
+            src_->configure();
+        }
     } catch (const std::exception& ex) {
         std::lock_guard<std::mutex> lk(mu_);
         last_error_ = ex.what();
@@ -112,6 +122,17 @@ void MonitorEngine::run() {
 
     const size_t chunk = (size_t)fs * (size_t)cfg_.chunk_ms / 1000;
     unsigned long long seq = 0;
+    unsigned long long samples_processed = 0;
+    std::ifstream file;
+    if (!cfg_.iq_file.empty()) {
+        file.open(cfg_.iq_file, std::ios::binary);
+        if (!file) {
+            std::lock_guard<std::mutex> lk(mu_);
+            last_error_ = "cannot open IQ file: " + cfg_.iq_file;
+            running_.store(false);
+            return;
+        }
+    }
     std::vector<ChannelStats> totals;
     for (int ch : cfg_.channels) {
         if (cfg_.decode_fr) totals.push_back({ch, 0, 0, 0});
@@ -121,12 +142,28 @@ void MonitorEngine::run() {
     while (running_.load()) {
         std::vector<uint8_t> iq;
         try {
-            src_->read(iq, chunk);
+            if (file.is_open()) {
+                iq.resize(chunk * 2);
+                file.read(reinterpret_cast<char*>(iq.data()),
+                          static_cast<std::streamsize>(iq.size()));
+                const auto nbytes = file.gcount();
+                if (nbytes == 0) {
+                    if (file.bad()) throw std::runtime_error("IQ file read error");
+                    break;  // normal EOF
+                }
+                if (nbytes % 2 != 0)
+                    throw std::runtime_error("partial I/Q pair at end of file");
+                iq.resize(static_cast<size_t>(nbytes));
+            } else {
+                src_->read(iq, chunk);
+            }
         } catch (const std::exception& ex) {
             std::lock_guard<std::mutex> lk(mu_);
             last_error_ = ex.what();
             break;
         }
+        const double capture_offset = double(samples_processed) / fs;
+        samples_processed += iq.size() / 2;
         std::vector<cf> x0 = to_baseband(iq);
 
         unsigned long long local_hits = 0;
@@ -154,7 +191,11 @@ void MonitorEngine::run() {
                 for (auto& f : found) {
                     PacketEvent e;
                     e.seq = ++seq;
-                    e.t_unix = (double)std::time(nullptr);
+                    e.t_unix = file.is_open()
+                        ? (cfg_.capture_start_unix > 0
+                            ? cfg_.capture_start_unix + capture_offset
+                            : -1.0 - capture_offset)
+                        : (double)std::time(nullptr);
                     e.channel = ch;
                     e.mode = m;
                     e.type = f.type;

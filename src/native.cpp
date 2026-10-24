@@ -50,6 +50,8 @@ void monitor_usage() {
         "Usage: openitc monitor [options]\n"
         "  Scan every PTC channel from one wideband capture and list packets\n"
         "  as they arrive, until interrupted (Ctrl-C).\n"
+        "  -f <file>     offline raw interleaved uint8 I/Q file (no SDR access)\n"
+        "  -T <epoch>    capture start Unix seconds (default: relative offsets)\n"
         "  -d <index>    RTL device index               (default 0)\n"
         "  -s <rate>     capture rate in Hz, multiple of 192000 (default 2304000)\n"
         "  -g <db>       tuner gain, 0 for AGC          (default 42.0)\n"
@@ -191,8 +193,12 @@ void print_wiu(const WiuInfo& w) {
 
 void print_event(const PacketEvent& e) {
     char ts[16];
-    std::time_t t = (std::time_t)e.t_unix;
-    std::strftime(ts, sizeof(ts), "%H:%M:%S", std::localtime(&t));
+    if (e.t_unix < 0) {
+        std::snprintf(ts, sizeof(ts), "+%.1fs", -1.0 - e.t_unix);
+    } else {
+        std::time_t t = (std::time_t)e.t_unix;
+        std::strftime(ts, sizeof(ts), "%H:%M:%S", std::localtime(&t));
+    }
     const auto& p = e.payload;
     std::printf("[%s] ch%03d %s  type=%02x %-7s len=%zu", ts, e.channel, mode_name(e.mode),
                 e.type, type_name(e.type), p.size());
@@ -241,6 +247,8 @@ int run_monitor(int argc, char** argv) {
             return argv[++i];
         };
         if (a == "-h" || a == "--help") { monitor_usage(); return 0; }
+        else if (a == "-f") ec.iq_file = next();
+        else if (a == "-T") ec.capture_start_unix = std::atof(next());
         else if (a == "-d") ec.rtl.device_index = std::atoi(next());
         else if (a == "-s") ec.rtl.sample_rate = (uint32_t)std::strtoul(next(), nullptr, 10);
         else if (a == "-g") {
@@ -254,6 +262,7 @@ int run_monitor(int argc, char** argv) {
         else if (a == "-V") verbosity = std::atoi(next());
         else if (a == "-I") interval_sec = std::atoi(next());
     }
+    if (ec.capture_start_unix < 0) fail("-T must be a nonnegative Unix timestamp");
     if (verbosity < 0 || verbosity > 2) fail("-V must be 0, 1, or 2");
     if (interval_sec < 1) fail("-I must be at least 1 second");
     if (ec.channels.empty()) ec.channels = default_channels();
@@ -275,8 +284,12 @@ int run_monitor(int argc, char** argv) {
         print_event(e);
     });
 
-    std::printf("OpenITC monitor - device %d (%s)\n", ec.rtl.device_index,
-                eng.device_name().c_str());
+    if (ec.iq_file.empty())
+        std::printf("OpenITC monitor - device %d (%s)\n", ec.rtl.device_index,
+                    eng.device_name().c_str());
+    else
+        std::printf("OpenITC monitor - offline IQ file %s (U8 interleaved)\n",
+                    ec.iq_file.c_str());
     const double span = (itc_frequency(176) - itc_frequency(101)) / 1e6;
     std::printf("  %zu channels, center %.3f MHz, span %.3f MHz, rate %u Hz, gain %s,"
                 " bias_tee %s\n",
@@ -284,7 +297,8 @@ int run_monitor(int argc, char** argv) {
                 ec.rtl.agc ? "AGC"
                            : (std::to_string(ec.rtl.gain_tenths_db / 10.0) + " dB").c_str(),
                 ec.rtl.bias_tee ? "on" : "off");
-    std::printf("  scanning... Ctrl-C to stop\n");
+    std::printf("  %s\n", ec.iq_file.empty() ? "scanning... Ctrl-C to stop"
+                                               : "replaying file until EOF...");
 
     if (!eng.start()) {
         std::fprintf(stderr, "error: %s\n", eng.last_error().c_str());

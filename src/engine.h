@@ -18,6 +18,8 @@ struct EngineConfig {
     std::vector<int> channels;  // empty => default_channels()
     int chunk_ms = 250;
     int max_errors = 8;
+    std::string iq_file;  // empty => live RTL-SDR; otherwise raw interleaved U8 IQ
+    double capture_start_unix = 0;  // 0 => print relative capture offsets
     bool decode_fr = true;
     bool decode_hr = true;
 };
